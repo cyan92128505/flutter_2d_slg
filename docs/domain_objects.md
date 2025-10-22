@@ -1,4 +1,4 @@
-# 完整 Domain Layer 物件設計（最終版）
+# Domain Layer 物件設計
 
 ## Value Objects
 
@@ -35,7 +35,7 @@ class GameTime {
   
   // 推進到下一個時段
   // morning → afternoon → evening → night → (隔天) morning
-  GameTime advance() {
+  GameTime advanceToNextPeriod() {
     if (period == TimeOfDay.night) {
       // 深夜 → 隔天早上
       return advanceToNextDay();
@@ -304,7 +304,7 @@ class Relationships {
 ```
 
 **設計決策**：
-- ✅ 初次互動自動建立關係（預設 50）
+- ✅ 首次互動自動建立關係（預設 50）
 
 ---
 
@@ -709,7 +709,7 @@ class GameState {
   
   // 推進時間（由事件觸發）
   GameState advanceTime() {
-    return copyWith(time: time.advance());
+    return copyWith(time: time.advanceToNextPeriod());
   }
   
   // 推進到隔天
