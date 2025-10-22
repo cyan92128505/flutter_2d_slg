@@ -40,12 +40,40 @@ docs/
 ```
 玩家起床 → 選擇場景 → 探索互動點 → 觸發事件 
 → 做出選擇 → 影響數值/關係 → 時間推進 → 循環
+→ 週末特殊事件 → 季節轉換事件
 ```
+
+### Time Progression
+- **Daily**: 4 periods (morning → afternoon → evening → night)
+- **Weekly**: 7 days (Monday-Sunday), week counter increments
+- **Seasonal**: Event-triggered transitions (Spring → Summer → Autumn → Winter)
+
+### Location Hierarchy
+```
+Root Location (e.g. Home)
+├─ Sub-location (Kitchen)
+│  ├─ Interaction Point (Stove)
+│  └─ Interaction Point (Fridge)
+└─ Sub-location (Bedroom)
+   ├─ Interaction Point (Bed)
+   └─ Interaction Point (Desk)
+```
+
+### Relationship Mechanics
+- **Affection**: Built through positive interactions, romance routes
+- **Domination**: Built through leverage items, control routes
+- **Corruption**: Player stat affecting available relationship options
+  - Low: Romance-focused gameplay
+  - High: Domination routes unlock
+
 
 ### Key Features
 - **Interactive Exploration**: Click objects in scenes to discover events
-- **Relationship Building**: Multiple romance routes with jealousy/domination mechanics
-- **Stat Management**: 5 attributes affecting gameplay (stamina, charm, corruption, intelligence, cleanliness)
+- **Relationship Building**: Multiple romance routes with affection & domination mechanics
+- **Stat Management**: 5 core attributes (stamina, charm, intelligence, corruption, cleanliness)
+- **Seasonal Events**: Spring/Summer/Autumn/Winter cycle affects available scenarios
+- **Weekly Schedule**: 7-day cycle with weekday-specific events
+- **Hierarchical Locations**: Nested interaction points (home > kitchen > stove)
 - **Dynamic Dialogue**: Conversations change based on interaction count
 - **Multiple Endings**: Non-exclusive endings for each character
 
@@ -129,21 +157,39 @@ docs/
 
 ### Exploration System
 - ✅ Click-based interaction (not random encounters)
+- ✅ Hierarchical location structure:
+  - Root locations (home, park, school)
+  - Sub-locations (kitchen, bedroom)
+  - Interaction points (stove, bed, desk)
 - ✅ No stamina cost for exploration
 - ✅ NPC hints unlock hidden interaction points
-- ✅ Interaction count persisted in save files
+- ✅ Interaction count persisted per event
+  - First interaction may differ from subsequent ones
+  - Enables progression-based dialogue changes
 
 ### Time System
-- ✅ 4 time slots per day
+- ✅ 4 time slots per day (morning/afternoon/evening/night)
+- ✅ Weekly cycle (Monday-Sunday, week counter increments)
+- ✅ Seasonal events (Spring/Summer/Autumn/Winter)
+  - Season changes triggered by special events (not time-based)
+  - Affects available scenarios and NPC behaviors
 - ✅ Stamina cannot go negative (forced rest at 0)
 - ✅ Minor events don't consume time
 - ✅ Major events consume time and force scene exit
 
 ### Relationship System
 - ✅ Multiple simultaneous romances allowed
-- ✅ Domination mechanic via leverage items
-- ✅ Corruption as single value (0-100)
-- ✅ Characters have corruption range requirements
+- ✅ Dual relationship values per character:
+  - **Affection**: Mutual attraction (0-100)
+  - **Domination**: Control/leverage (0-100)
+- ✅ Leverage items enable domination routes
+  - Items obtained through specific events
+  - Required to unlock certain character interactions
+- ✅ Corruption stat affects available relationship options
+  - Characters have corruption range requirements
+  - Low corruption: Romance routes only
+  - High corruption: Domination routes available
+- ✅ Jealousy mechanics between characters (Phase 2)
 
 ### Ending System
 - ✅ Multiple non-exclusive endings
@@ -161,5 +207,172 @@ docs/
 
 ---
 
-**Last Updated**: 2025-10-16  
-**Version**: 1.0 (Initial Architecture)
+## Domain Design
+
+```mermaid
+classDiagram
+    %% Aggregate Roots
+    class GameState {
+        <<Aggregate Root>>
+        +Player player
+        +PlayerState playerState
+        +GameTime time
+        +Season season
+        +String currentLocationId
+        +EventHistory eventHistory
+        +advanceTime() GameState
+        +changeSeason(Season) GameState
+        +moveTo(String) GameState
+        +recordInteraction(String) GameState
+        +modifyStat(String, int) GameState
+        +modifyAffection(String, int) GameState
+        +modifyDomination(String, int) GameState
+    }
+
+    class Player {
+        <<Entity>>
+        +String id
+        +String name
+        +Stats stats
+        +Relationships relationships
+        +Map~String,dynamic~ flags
+        +modifyStat(String, int) Player
+        +modifyAffection(String, int) Player
+        +modifyDomination(String, int) Player
+        +setFlag(String, dynamic) Player
+    }
+
+    %% Value Objects
+    class GameTime {
+        <<Value Object>>
+        +int week
+        +Weekday weekday
+        +TimeOfDay period
+        +advance() GameTime
+        +advanceToNextDay() GameTime
+        +isWeekend() bool
+        +isWorkday() bool
+    }
+
+    class Stats {
+        <<Value Object>>
+        -Map~String,int~ _values
+        +get(String) int
+        +modify(String, int) Stats
+        +set(String, int) Stats
+        +initial()$ Stats
+    }
+
+    class Relationships {
+        <<Value Object>>
+        -Map~String,Relationship~ _data
+        +get(String) Relationship?
+        +modifyAffection(String, int) Relationships
+        +modifyDomination(String, int) Relationships
+        +getAll() List~Relationship~
+    }
+
+    class Relationship {
+        <<Value Object>>
+        +String characterId
+        +int affection
+        +int domination
+        +modifyAffection(int) Relationship
+        +modifyDomination(int) Relationship
+    }
+
+    class PlayerState {
+        <<Value Object>>
+        +Inventory inventory
+        +String? wearing
+        +Set~String~ statusEffects
+        +hasItem(String) bool
+        +equipItem(String) PlayerState
+        +addStatus(String) PlayerState
+    }
+
+    class Inventory {
+        <<Value Object>>
+        -Map~String,int~ _items
+        +hasItem(String) bool
+        +getCount(String) int
+        +addItem(String, int) Inventory
+        +removeItem(String, int) Inventory
+    }
+
+    class EventHistory {
+        <<Value Object>>
+        -Map~String,int~ _interactionCount
+        +hasTriggered(String) bool
+        +getInteractionCount(String) int
+        +recordInteraction(String) EventHistory
+    }
+
+    class Location {
+        <<Entity>>
+        +String id
+        +String? parentId
+        +isChildOf(String) bool
+        +isRoot() bool
+    }
+
+    %% Enums
+    class Season {
+        <<enumeration>>
+        spring
+        summer
+        autumn
+        winter
+    }
+
+    class Weekday {
+        <<enumeration>>
+        monday
+        tuesday
+        wednesday
+        thursday
+        friday
+        saturday
+        sunday
+    }
+
+    class TimeOfDay {
+        <<enumeration>>
+        morning
+        afternoon
+        evening
+        night
+    }
+
+    %% Relationships - GameState 為核心
+    GameState *-- Player : contains
+    GameState *-- PlayerState : contains
+    GameState *-- GameTime : contains
+    GameState *-- EventHistory : contains
+    GameState --> Season : has
+    GameState --> Location : references by id
+
+    %% Player 包含的 Value Objects
+    Player *-- Stats : contains
+    Player *-- Relationships : contains
+
+    %% Relationships 包含多個 Relationship
+    Relationships *-- "0..*" Relationship : contains
+
+    %% PlayerState 包含 Inventory
+    PlayerState *-- Inventory : contains
+
+    %% GameTime 使用 Enums
+    GameTime --> Weekday : uses
+    GameTime --> TimeOfDay : uses
+
+    %% Location 的父子關係
+    Location --> Location : parent-child
+
+    %% 註解
+    note for GameState "核心 Aggregate Root<br />協調所有領域物件<br />只存 locationId 不存整個 Location"
+    note for Location "Entity with parent-child<br />支援層級結構 (home > kitchen > stove)"
+    note for Stats "完全彈性的 Map<br />可新增任意屬性<br />預設: stamina, charm, intelligence, corruption, cleanliness"
+    note for Relationship "雙數值系統<br />affection: 好感度<br />domination: 支配度"
+    note for Season "獨立欄位<br />透過事件切換<br />不隨時間自動變化"
+```

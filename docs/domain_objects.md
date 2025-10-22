@@ -145,21 +145,16 @@ class Stats {
   
   const Stats(this._values);
   
-  // 預設初始值（所有屬性 50）
+  // 預設初始值（所有屬性 50，除了 corruption 從 0 開始）
   factory Stats.initial() {
     return Stats({
-      Stats.stamina: 50,
-      Stats.charm: 50,
-      Stats.intelligence: 50,
-      Stats.mood: 50,
+      'stamina': 50,
+      'charm': 50,
+      'intelligence': 50,
+      'corruption': 0,        // 從 0 開始（代表純潔）
+      'cleanliness': 50,
     });
   }
-  
-  // 常數（避免拼字錯誤）
-  static const stamina = 'stamina';
-  static const charm = 'charm';
-  static const intelligence = 'intelligence';
-  static const mood = 'mood';
   
   // 取得屬性值（不存在回傳 0）
   int get(String statName) => _values[statName] ?? 0;
@@ -220,19 +215,32 @@ class Stats {
 ```dart
 class Relationship {
   final String characterId;
-  final int affection;  // 0-100
+  final int affection;    // 好感度 0-100
+  final int domination;   // 支配度 0-100
   
   const Relationship({
     required this.characterId,
     required this.affection,
+    this.domination = 0,  // 預設 0（無支配）
   });
   
   // 修改好感度
-  Relationship modify(int delta) {
+  Relationship modifyAffection(int delta) {
     final newAffection = (affection + delta).clamp(0, 100);
     return Relationship(
       characterId: characterId,
       affection: newAffection,
+      domination: domination,
+    );
+  }
+  
+  // 修改支配度
+  Relationship modifyDomination(int delta) {
+    final newDomination = (domination + delta).clamp(0, 100);
+    return Relationship(
+      characterId: characterId,
+      affection: affection,
+      domination: newDomination,
     );
   }
   
@@ -242,11 +250,13 @@ class Relationship {
     identical(this, other) ||
     other is Relationship &&
     characterId == other.characterId &&
-    affection == other.affection;
+    affection == other.affection &&
+    domination == other.domination;
   
   @override
-  int get hashCode => Object.hash(characterId, affection);
+  int get hashCode => Object.hash(characterId, affection, domination);
 }
+
 ```
 
 ---
@@ -259,31 +269,46 @@ class Relationships {
   
   const Relationships(this._data);
   
-  // 空關係
   factory Relationships.empty() => const Relationships({});
   
-  // 取得特定角色關係
   Relationship? get(String characterId) => _data[characterId];
   
-  // 修改關係（如果不存在則建立新關係，預設 50）
-  Relationships modify(String characterId, int delta) {
+  // 修改好感度（如果不存在則建立新關係，預設 affection=50, domination=0）
+  Relationships modifyAffection(String characterId, int delta) {
     final current = get(characterId);
     final newRelationship = current != null
-      ? current.modify(delta)
-      : Relationship(characterId: characterId, affection: (50 + delta).clamp(0, 100));
+      ? current.modifyAffection(delta)
+      : Relationship(
+          characterId: characterId,
+          affection: (50 + delta).clamp(0, 100),
+          domination: 0,
+        );
     
     final newData = Map<String, Relationship>.from(_data);
     newData[characterId] = newRelationship;
     return Relationships(newData);
   }
   
-  // 取得所有關係
+  // 修改支配度（如果不存在則建立新關係）
+  Relationships modifyDomination(String characterId, int delta) {
+    final current = get(characterId);
+    final newRelationship = current != null
+      ? current.modifyDomination(delta)
+      : Relationship(
+          characterId: characterId,
+          affection: 50,
+          domination: delta.clamp(0, 100),
+        );
+    
+    final newData = Map<String, Relationship>.from(_data);
+    newData[characterId] = newRelationship;
+    return Relationships(newData);
+  }
+  
   List<Relationship> getAll() => _data.values.toList();
   
-  // 檢查是否有關係
   bool has(String characterId) => _data.containsKey(characterId);
   
-  // Equality
   @override
   bool operator ==(Object other) =>
     identical(this, other) ||
@@ -483,46 +508,44 @@ class PlayerState {
 
 ```dart
 class EventHistory {
-  final Map<String, int> _triggerCount;  // eventId → 觸發次數
+  final Map<String, int> _interactionCount;  // eventId → 互動次數
   
-  const EventHistory(this._triggerCount);
+  const EventHistory(this._interactionCount);
   
-  // 空歷史
   factory EventHistory.empty() => const EventHistory({});
   
   // 檢查事件是否已觸發
   bool hasTriggered(String eventId) {
-    return _triggerCount.containsKey(eventId) && _triggerCount[eventId]! > 0;
+    return _interactionCount.containsKey(eventId) && _interactionCount[eventId]! > 0;
   }
   
-  // 取得觸發次數
-  int getTriggerCount(String eventId) => _triggerCount[eventId] ?? 0;
+  // 取得互動次數
+  int getInteractionCount(String eventId) => _interactionCount[eventId] ?? 0;
   
-  // 記錄觸發
-  EventHistory recordTrigger(String eventId) {
-    final newCount = Map<String, int>.from(_triggerCount);
-    final currentCount = getTriggerCount(eventId);
+  // 記錄互動
+  EventHistory recordInteraction(String eventId) {
+    final newCount = Map<String, int>.from(_interactionCount);
+    final currentCount = getInteractionCount(eventId);
     newCount[eventId] = currentCount + 1;
     return EventHistory(newCount);
   }
   
   // 取得所有已觸發事件
   List<String> getTriggeredEvents() {
-    return _triggerCount.entries
+    return _interactionCount.entries
       .where((e) => e.value > 0)
       .map((e) => e.key)
       .toList();
   }
   
-  // Equality
   @override
   bool operator ==(Object other) =>
     identical(this, other) ||
     other is EventHistory &&
-    _mapsEqual(_triggerCount, other._triggerCount);
+    _mapsEqual(_interactionCount, other._interactionCount);
   
   @override
-  int get hashCode => Object.hashAll(_triggerCount.entries);
+  int get hashCode => Object.hashAll(_interactionCount.entries);
   
   static bool _mapsEqual(Map<String, int> a, Map<String, int> b) {
     if (a.length != b.length) return false;
@@ -617,9 +640,15 @@ class Player {
   }
   
   // === 關係相關 ===
+
+  // 修改好感度
+  Player modifyAffection(String characterId, int delta) {
+    return copyWith(relationships: relationships.modifyAffection(characterId, delta));
+  }
   
-  Player modifyRelationship(String characterId, int delta) {
-    return copyWith(relationships: relationships.modify(characterId, delta));
+  // 修改支配度
+  Player modifyDomination(String characterId, int delta) {
+    return copyWith(relationships: relationships.modifyDomination(characterId, delta));
   }
   
   // === 旗標相關 ===
@@ -733,9 +762,9 @@ class GameState {
   
   // === 事件相關 ===
   
-  // 記錄事件觸發
-  GameState recordEvent(String eventId) {
-    return copyWith(eventHistory: eventHistory.recordTrigger(eventId));
+  // 記錄互動
+  GameState recordInteraction(String eventId) {
+    return copyWith(eventHistory: eventHistory.recordInteraction(eventId));
   }
   
   // === 玩家相關 ===
@@ -755,9 +784,13 @@ class GameState {
   GameState modifyStat(String statName, int delta) {
     return copyWith(player: player.modifyStat(statName, delta));
   }
+
+  GameState modifyAffection(String characterId, int delta) {
+    return copyWith(player: player.modifyAffection(characterId, delta));
+  }
   
-  GameState modifyRelationship(String characterId, int delta) {
-    return copyWith(player: player.modifyRelationship(characterId, delta));
+  GameState modifyDomination(String characterId, int delta) {
+    return copyWith(player: player.modifyDomination(characterId, delta));
   }
   
   GameState setFlag(String key, dynamic value) {
