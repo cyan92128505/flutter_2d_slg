@@ -61,11 +61,13 @@ Root Location (e.g. Home)
 
 ### Relationship Mechanics
 - **Affection**: Built through positive interactions, romance routes
-- **Domination**: Built through leverage items, control routes
+- **Domination**: Built through leverage items/events, control routes
+  - **YAML-driven**: Writers freely define domination gain
+  - Example: Photo item +20, Video event +30, Blackmail +50
+  - Flexible balancing without code changes
 - **Corruption**: Player stat affecting available relationship options
   - Low: Romance-focused gameplay
   - High: Domination routes unlock
-
 
 ### Key Features
 - **Interactive Exploration**: Click objects in scenes to discover events
@@ -98,17 +100,17 @@ Root Location (e.g. Home)
 
 ## Development Phases
 
-| Phase | Duration | Deliverable | Status |
-|-------|----------|-------------|--------|
-| 0. Architecture | - | Complete design docs | ✅ Done |
-| 1. Domain Layer | Week 1-2 | Core business logic | 📋 Next |
-| 2. Application Layer | Week 3-4 | Use cases | ⏳ Planned |
-| 3. Infrastructure | Week 5-6 | Save system | ⏳ Planned |
-| 4. Presentation MVP | Week 7-8 | Playable demo | ⏳ Planned |
-| 5. Vertical Slice | Week 9-10 | 1 character route | ⏳ Planned |
-| 6. Tooling | Week 11-12 | Validation tools | ⏳ Planned |
-| 7. Expansion | Week 13-16 | 3 characters, 8 scenes | ⏳ Planned |
-| 8. Polish | Week 17-18 | Alpha release | ⏳ Planned |
+| Phase                | Duration   | Deliverable                                                  | Status    |
+| -------------------- | ---------- | ------------------------------------------------------------ | --------- |
+| 0. Architecture      | -          | Complete design docs                                         | ✅ Done    |
+| 1. Domain Layer      | Week 1-2   | Core business logic (Stats, Time, Relationship, Interaction) | 📋 Next    |
+| 2. Application Layer | Week 3-4   | Use cases                                                    | ⏳ Planned |
+| 3. Infrastructure    | Week 5-6   | Save system                                                  | ⏳ Planned |
+| 4. Presentation MVP  | Week 7-8   | Playable demo                                                | ⏳ Planned |
+| 5. Vertical Slice    | Week 9-10  | 1 character route                                            | ⏳ Planned |
+| 6. Tooling           | Week 11-12 | Validation tools                                             | ⏳ Planned |
+| 7. Expansion         | Week 13-16 | 3 characters, 8 scenes                                       | ⏳ Planned |
+| 8. Polish            | Week 17-18 | Alpha release                                                | ⏳ Planned |
 
 ---
 
@@ -163,9 +165,11 @@ Root Location (e.g. Home)
   - Interaction points (stove, bed, desk)
 - ✅ No stamina cost for exploration
 - ✅ NPC hints unlock hidden interaction points
-- ✅ Interaction count persisted per event
+- ✅ Interaction count persisted per interaction point
+  - Tracks "Nth time clicking this specific point"
   - First interaction may differ from subsequent ones
   - Enables progression-based dialogue changes
+  - Example: 7th visit to cafe counter = "regular customer"
 
 ### Time System
 - ✅ 4 time slots per day (morning/afternoon/evening/night)
@@ -182,6 +186,19 @@ Root Location (e.g. Home)
 - ✅ Dual relationship values per character:
   - **Affection**: Mutual attraction (0-100)
   - **Domination**: Control/leverage (0-100)
+- ✅ Domination system design:
+  - **Numeric value** (0-100), not item counter
+  - **YAML-driven gains**: Writers set delta per item/event
+  - **Flexible balancing**: Different items = different effects
+  - **No code changes needed**: All in scenario files
+  - Example YAML:
+    ```yaml
+    event_blackmail:
+      effects:
+        - type: modify_domination
+          character: alice
+          delta: 30
+    ```
 - ✅ Leverage items enable domination routes
   - Items obtained through specific events
   - Required to unlock certain character interactions
@@ -219,11 +236,12 @@ classDiagram
         +GameTime time
         +Season season
         +String currentLocationId
-        +EventHistory eventHistory
+        +InteractionHistory interactionHistory
         +advanceTime() GameState
         +changeSeason(Season) GameState
         +moveTo(String) GameState
-        +recordInteraction(String) GameState
+        +recordInteraction(String, String) GameState
+        +getInteractionCount(String) int
         +modifyStat(String, int) GameState
         +modifyAffection(String, int) GameState
         +modifyDomination(String, int) GameState
@@ -300,12 +318,20 @@ classDiagram
         +removeItem(String, int) Inventory
     }
 
-    class EventHistory {
+    class InteractionHistory {
         <<Value Object>>
-        -Map~String,int~ _interactionCount
-        +hasTriggered(String) bool
+        -Map~String,InteractionRecord~ _records
         +getInteractionCount(String) int
-        +recordInteraction(String) EventHistory
+        +hasCompletedEvent(String) bool
+        +recordInteraction(String, String) InteractionHistory
+    }
+
+    class InteractionRecord {
+        <<Value Object>>
+        +String pointId
+        +int totalInteractions
+        +Set~String~ completedEvents
+        +recordEvent(String) InteractionRecord
     }
 
     class Location {
@@ -348,7 +374,7 @@ classDiagram
     GameState *-- Player : contains
     GameState *-- PlayerState : contains
     GameState *-- GameTime : contains
-    GameState *-- EventHistory : contains
+    GameState *-- InteractionHistory : contains
     GameState --> Season : has
     GameState --> Location : references by id
 
@@ -362,6 +388,9 @@ classDiagram
     %% PlayerState 包含 Inventory
     PlayerState *-- Inventory : contains
 
+    %% InteractionHistory 包含多個 InteractionRecord
+    InteractionHistory *-- "0..*" InteractionRecord : contains
+
     %% GameTime 使用 Enums
     GameTime --> Weekday : uses
     GameTime --> TimeOfDay : uses
@@ -373,6 +402,7 @@ classDiagram
     note for GameState "核心 Aggregate Root<br />協調所有領域物件<br />只存 locationId 不存整個 Location"
     note for Location "Entity with parent-child<br />支援層級結構 (home > kitchen > stove)"
     note for Stats "完全彈性的 Map<br />可新增任意屬性<br />預設: stamina, charm, intelligence, corruption, cleanliness"
-    note for Relationship "雙數值系統<br />affection: 好感度<br />domination: 支配度"
+    note for Relationship "雙數值系統<br />affection: 好感度<br />domination: 支配度 (YAML驅動)"
+    note for InteractionHistory "按互動點記錄<br />支援「第N次點擊」對話變化<br />totalInteractions 永久儲存"
     note for Season "獨立欄位<br />透過事件切換<br />不隨時間自動變化"
 ```

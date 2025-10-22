@@ -504,50 +504,51 @@ class PlayerState {
 
 ---
 
-### 8. EventHistory（事件歷史）
+### 8. InteractionHistory（互動歷史）
 
 ```dart
-class EventHistory {
-  final Map<String, int> _interactionCount;  // eventId → 互動次數
+class InteractionHistory {
+  final Map<String, InteractionRecord> _records;  // pointId → 記錄
   
-  const EventHistory(this._interactionCount);
+  const InteractionHistory(this._records);
   
-  factory EventHistory.empty() => const EventHistory({});
+  factory InteractionHistory.empty() => const InteractionHistory({});
   
-  // 檢查事件是否已觸發
-  bool hasTriggered(String eventId) {
-    return _interactionCount.containsKey(eventId) && _interactionCount[eventId]! > 0;
+  // 取得某個互動點的總互動次數
+  int getInteractionCount(String pointId) {
+    return _records[pointId]?.totalInteractions ?? 0;
   }
   
-  // 取得互動次數
-  int getInteractionCount(String eventId) => _interactionCount[eventId] ?? 0;
-  
-  // 記錄互動
-  EventHistory recordInteraction(String eventId) {
-    final newCount = Map<String, int>.from(_interactionCount);
-    final currentCount = getInteractionCount(eventId);
-    newCount[eventId] = currentCount + 1;
-    return EventHistory(newCount);
+  // 檢查某事件是否已完成
+  bool hasCompletedEvent(String eventId) {
+    return _records.values.any((record) => record.completedEvents.contains(eventId));
   }
   
-  // 取得所有已觸發事件
-  List<String> getTriggeredEvents() {
-    return _interactionCount.entries
-      .where((e) => e.value > 0)
-      .map((e) => e.key)
-      .toList();
+  // 記錄一次互動
+  InteractionHistory recordInteraction(String pointId, String eventId) {
+    final current = _records[pointId] ?? InteractionRecord.empty(pointId);
+    final updated = current.recordEvent(eventId);
+    
+    final newRecords = Map<String, InteractionRecord>.from(_records);
+    newRecords[pointId] = updated;
+    return InteractionHistory(newRecords);
+  }
+  
+  // 取得所有有記錄的互動點
+  List<String> getInteractedPoints() {
+    return _records.keys.toList();
   }
   
   @override
   bool operator ==(Object other) =>
     identical(this, other) ||
-    other is EventHistory &&
-    _mapsEqual(_interactionCount, other._interactionCount);
+    other is InteractionHistory &&
+    _mapsEqual(_records, other._records);
   
   @override
-  int get hashCode => Object.hashAll(_interactionCount.entries);
+  int get hashCode => Object.hashAll(_records.entries);
   
-  static bool _mapsEqual(Map<String, int> a, Map<String, int> b) {
+  static bool _mapsEqual(Map<String, InteractionRecord> a, Map<String, InteractionRecord> b) {
     if (a.length != b.length) return false;
     for (var key in a.keys) {
       if (a[key] != b[key]) return false;
@@ -555,6 +556,70 @@ class EventHistory {
     return true;
   }
 }
+
+class InteractionRecord {
+  final String pointId;
+  final int totalInteractions;        // 點了這個點幾次
+  final Set<String> completedEvents;  // 完成了哪些事件
+  
+  const InteractionRecord({
+    required this.pointId,
+    required this.totalInteractions,
+    required this.completedEvents,
+  });
+  
+  factory InteractionRecord.empty(String pointId) {
+    return InteractionRecord(
+      pointId: pointId,
+      totalInteractions: 0,
+      completedEvents: {},
+    );
+  }
+  
+  // 記錄一次事件
+  InteractionRecord recordEvent(String eventId) {
+    return InteractionRecord(
+      pointId: pointId,
+      totalInteractions: totalInteractions + 1,
+      completedEvents: {...completedEvents, eventId},
+    );
+  }
+  
+  @override
+  bool operator ==(Object other) =>
+    identical(this, other) ||
+    other is InteractionRecord &&
+    pointId == other.pointId &&
+    totalInteractions == other.totalInteractions &&
+    _setsEqual(completedEvents, other.completedEvents);
+  
+  @override
+  int get hashCode => Object.hash(pointId, totalInteractions, Object.hashAll(completedEvents));
+  
+  static bool _setsEqual(Set<String> a, Set<String> b) {
+    if (a.length != b.length) return false;
+    return a.containsAll(b);
+  }
+}
+```
+
+**設計決策**：
+- ✅ 按 **互動點** 記錄（不是按事件）
+- ✅ 支援「第 N 次點擊咖啡櫃台」的對話變化
+- ✅ totalInteractions 永久儲存在 save file
+
+**使用範例**：
+```dart
+// 玩家第 7 次點擊「咖啡櫃台」
+final count = gameState.getInteractionCount('cafe_counter');
+// count = 7
+
+// YAML 事件根據次數選擇對話
+event_cafe_counter:
+  dialogue_variants:
+    1: "Welcome! First time here?"
+    2: "Back again?"
+    5: "You're a regular now! Here's a discount."
 ```
 
 ---
@@ -597,7 +662,7 @@ class Location {
 
 ---
 
-### 10. Player（玩家 Aggregate Root）
+### 10. Player（玩家 Entity）
 
 ```dart
 class Player {
@@ -708,7 +773,7 @@ class GameState {
   final GameTime time;
   final Season season;              // 獨立的季節欄位
   final String currentLocationId;   // 只存 location id
-  final EventHistory eventHistory;
+  final InteractionHistory interactionHistory;
   
   const GameState({
     required this.player,
@@ -716,7 +781,7 @@ class GameState {
     required this.time,
     required this.season,
     required this.currentLocationId,
-    required this.eventHistory,
+    required this.interactionHistory,
   });
   
   // 建立初始遊戲狀態
@@ -730,7 +795,7 @@ class GameState {
       time: GameTime(week: 1, weekday: Weekday.monday, period: TimeOfDay.morning),
       season: Season.spring,
       currentLocationId: 'home',
-      eventHistory: EventHistory.empty(),
+      interactionHistory: InteractionHistory.empty(),
     );
   }
   
@@ -762,9 +827,15 @@ class GameState {
   
   // === 事件相關 ===
   
-  // 記錄互動
-  GameState recordInteraction(String eventId) {
-    return copyWith(eventHistory: eventHistory.recordInteraction(eventId));
+  // 互動相關
+  GameState recordInteraction(String pointId, String eventId) {
+    return copyWith(
+      interactionHistory: interactionHistory.recordInteraction(pointId, eventId)
+    );
+  }
+  
+  int getInteractionCount(String pointId) {
+    return interactionHistory.getInteractionCount(pointId);
   }
   
   // === 玩家相關 ===
@@ -820,7 +891,7 @@ class GameState {
     GameTime? time,
     Season? season,
     String? currentLocationId,
-    EventHistory? eventHistory,
+    InteractionHistory? interactionHistory,
   }) {
     return GameState(
       player: player ?? this.player,
@@ -828,7 +899,7 @@ class GameState {
       time: time ?? this.time,
       season: season ?? this.season,
       currentLocationId: currentLocationId ?? this.currentLocationId,
-      eventHistory: eventHistory ?? this.eventHistory,
+      interactionHistory: interactionHistory ?? this.interactionHistory,
     );
   }
   
@@ -842,7 +913,7 @@ class GameState {
     time == other.time &&
     season == other.season &&
     currentLocationId == other.currentLocationId &&
-    eventHistory == other.eventHistory;
+    interactionHistory == other.interactionHistory;
   
   @override
   int get hashCode => Object.hash(
@@ -851,7 +922,7 @@ class GameState {
     time,
     season,
     currentLocationId,
-    eventHistory,
+    interactionHistory,
   );
 }
 ```
@@ -929,8 +1000,12 @@ class LocationNotFoundException implements Exception {
 1. **GameTime**：week + weekday + period（季節分離）
 2. **Season**：獨立欄位，透過事件切換
 3. **Location**：Entity with parent-child（linking object）
-4. **Stats**：完全彈性 Map + 預設初始值
-5. **GameState**：只存 locationId，不存整個 Location
+4. **Stats**：完全彈性 Map + 預設初始值（5 個屬性）
+5. **Relationship**：雙數值系統（affection + domination
+6. ```
+6. **InteractionHistory**：按互動點記錄（pointId → record）
+7. **GameState**：Aggregate Root，只存 locationId，不存整個 Location
+8. **Domination**：YAML 驅動的數值增長（道具/事件自由設定增量）
 
 ### ✅ Immutability（不可變性）
 - 所有物件都是 immutable
