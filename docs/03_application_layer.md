@@ -476,7 +476,7 @@ class SaveGameInput {
     "relationships": {...},
     "storyFlags": [...]
   },
-  "saved_at": "2025-01-16T10:30:00Z"
+  "saved_at": "2025-10-16T10:30:00Z"
 }
 ```
 
@@ -758,5 +758,5 @@ After implementing Application Layer:
 
 ---
 
-**Last Updated**: 2025-01-16  
+**Last Updated**: 2025-10-16  
 **Version**: 1.0
