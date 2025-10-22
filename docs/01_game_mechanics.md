@@ -5,6 +5,7 @@
 ```
 Wake Up → Choose Location → Explore Interaction Points → Trigger Events
 → Make Choices → Affect Stats/Relationships → Time Advances → Loop
+→ Weekend Events → Seasonal Transitions
 ```
 
 ---
@@ -13,8 +14,27 @@ Wake Up → Choose Location → Explore Interaction Points → Trigger Events
 
 ### Structure
 - **1 Day = 4 Time Slots**: Morning, Afternoon, Evening, Night
+- **1 Week = 7 Days**: Monday through Sunday
+- **Week Counter**: Tracks game progression (Week 1, Week 2, ...)
+- **4 Seasons**: Spring, Summer, Autumn, Winter (event-triggered)
 - **Actions consume time slots** (major events only)
 - **Sleep** transitions to next day (morning)
+
+### Weekly Cycle
+- **Weekdays (Mon-Fri)**: Work available, school events
+- **Weekends (Sat-Sun)**: Special events, character dates
+- **Week transitions**: Sunday night → Monday morning (week++)
+
+### Seasonal System
+- **Trigger Method**: Special events cause season changes
+  - Example: Valentine's event → Spring begins
+  - Example: Beach party → Summer starts
+- **Not time-based**: Seasons don't auto-advance with weeks
+- **Effects**:
+  - Unlock seasonal locations (beach in summer)
+  - Change NPC availability
+  - Affect event triggers
+  - Modify scene backgrounds
 
 ### Stamina Mechanics
 - **Range**: 0-100 (cannot be negative)
@@ -28,13 +48,13 @@ Wake Up → Choose Location → Explore Interaction Points → Trigger Events
 
 ### Five Core Attributes
 
-| Attribute | Range | Purpose |
-|-----------|-------|---------|
-| **Stamina** | 0-100 | Action currency; 0 = must rest |
-| **Charm** | 0-100 | First impressions; unlock events |
-| **Corruption** | 0-100 | Route branching (pure/corrupt) |
-| **Intelligence** | 0-100 | Work efficiency; skill checks |
-| **Cleanliness** | 0-100 | Dating requirement; NPC reactions |
+| Attribute        | Range | Purpose                           |
+| ---------------- | ----- | --------------------------------- |
+| **Stamina**      | 0-100 | Action currency; 0 = must rest    |
+| **Charm**        | 0-100 | First impressions; unlock events  |
+| **Corruption**   | 0-100 | Route branching (pure/corrupt)    |
+| **Intelligence** | 0-100 | Work efficiency; skill checks     |
+| **Cleanliness**  | 0-100 | Dating requirement; NPC reactions |
 
 ### Stat Modifications
 
@@ -63,7 +83,25 @@ Wake Up → Choose Location → Explore Interaction Points → Trigger Events
 - ⭐ No stamina cost to explore
 - Player actively clicks objects
 - Events triggered based on conditions
-- Dialogue changes with interaction count
+- **Dialogue changes with interaction count per point**
+
+### Hierarchical Locations
+
+**Structure:**
+```
+Root Location (Home)
+├─ Sub-location (Kitchen)
+│  ├─ Interaction Point (Stove)
+│  └─ Interaction Point (Fridge)
+└─ Sub-location (Bedroom)
+   ├─ Interaction Point (Bed)
+   └─ Interaction Point (Desk)
+```
+
+**Navigation:**
+- Click on sub-locations to enter
+- Interact with specific points within sub-locations
+- Parent locations accessible from sub-locations
 
 ### Discovery Mechanism
 
@@ -89,6 +127,24 @@ Undiscovered → (Hint Unlocks) → Available → (Player Clicks) → Event
 - Major Story Event + Other events → Point remains available
 - Minor Branch Event → Always remains available
 
+### Interaction Count Tracking
+
+**Critical Feature:** Each interaction point tracks total clicks
+
+**Example:**
+```
+Player clicks "Cafe Counter" 7 times total:
+  - 1st click: "Welcome! First time here?"
+  - 2nd-4th clicks: "Back again? The usual?"
+  - 5th+ clicks: "You're a regular now! Here's a discount."
+```
+
+**Implementation:**
+- Count stored per interaction point (not per event)
+- Persisted permanently in save files
+- YAML events define dialogue variants by count
+- Writers control breakpoints (1, 5, 10, etc.)
+
 ---
 
 ## Event System
@@ -111,24 +167,30 @@ Undiscovered → (Hint Unlocks) → Available → (Player Clicks) → Event
 ### Event Conditions
 
 Events trigger when ALL conditions met:
-- Time: Day range, specific time slot
+- Time: Week range, weekday, specific time slot
+- Season: Spring/Summer/Autumn/Winter requirement
 - Location: Specific scene + interaction point
 - Stats: Minimum attribute values
 - Flags: Story progression markers
-- Relationships: Character affection thresholds
+- Relationships: Character affection/domination thresholds
 - Random: Optional probability (0-1)
 
 ### Dialogue Variants
 
 Events can have different dialogue based on **interaction count**:
 
-```markdown
-Interaction #1: "Welcome! First time here?"
-Interaction #2-4: "Back again? The usual?"
-Interaction #5+: "Regular customer! Here's a discount."
+```yaml
+event_cafe_counter:
+  dialogue_variants:
+    1: "Welcome! First time here?"
+    2: "Back again? The usual?"
+    5: "Regular customer! Here's a discount."
 ```
 
-**Stored permanently in save files** ⭐
+**Selection Logic:**
+- Find largest key ≤ current count
+- Example: 7th interaction uses variant "5"
+- **Stored permanently in save files** ⭐
 
 ### Fallback Dialogue
 
@@ -145,8 +207,8 @@ When all events at a point are exhausted:
 
 **Per Character:**
 - Affection: 0-100 (numeric value)
-- Level: Stranger / Acquaintance / Friend / Close / Lover
-- Status: Normal / Dating / Dominated / EndingReached
+- Domination: 0-100 (numeric value)
+- Computed Status: Normal / Dating / Dominated / EndingReached
 
 ### Affection Changes
 
@@ -172,19 +234,44 @@ When all events at a point are exhausted:
 
 **Purpose:** Eliminate jealousy risk
 
-**Requirements:**
-- Collect 3+ leverage items (character-specific)
-- OR complete special blackmail event
+**Implementation:** YAML-driven numeric system
 
-**Effect:**
-- Relationship status → Dominated
-- Character accepts multi-romance
+**How It Works:**
+```yaml
+# Example 1: Item gives domination
+item_compromising_photo:
+  on_use:
+    effects:
+      - type: modify_domination
+        character: alice
+        delta: 20  # Photo gives +20 domination
+
+# Example 2: Event gives domination
+event_blackmail_success:
+  effects:
+    - type: modify_domination
+      character: bob
+      delta: 30  # Blackmail gives +30 domination
+
+# Example 3: Different items = different power
+item_secret_video:
+  on_use:
+    effects:
+      - type: modify_domination
+        character: alice
+        delta: 50  # Video is more powerful
+```
+
+**Threshold:**
+- Domination >= 80 → Character accepts multi-romance
 - No jealousy events triggered
+- Unlocks domination-specific routes
 
-**Leverage Items:**
-- Character's secret photos
-- Compromising evidence
-- Blackmail material
+**Design Benefits:**
+- Writers control power of each item/event
+- No code changes needed for balancing
+- Different characters can have different items
+- Flexible progression paths
 
 ---
 
@@ -234,7 +321,7 @@ When all events at a point are exhausted:
 
 **Special Items:**
 - Heart's Eye: See cards in minigames
-- Leverage items: Character domination
+- Leverage items: Increase character domination
 - Discount coupons: Save money
 
 ---
@@ -276,19 +363,28 @@ Drive story progression at key moments
 - Park: Exercise, random encounters
 - Supermarket: Shopping
 
+### Seasonal Locations
+Unlocked by season changes:
+- Beach (Summer)
+- Ski Resort (Winter)
+- Cherry Blossom Park (Spring)
+- Festival Grounds (Autumn)
+
 ### Unlock Mechanism
 - Story progression
 - Relationship milestones
 - Item acquisition
 - Stat thresholds
+- Season requirements
 
 ### Scene Structure
 
 Each location contains:
-- Background image
+- Background image (may change with seasons)
 - 3-7 interaction points
 - Basic actions (work, rest, leave)
 - Unlock conditions (if not initial)
+- Sub-locations (hierarchical structure)
 
 ### Movement
 - **No travel cost** (currently)
@@ -315,6 +411,7 @@ Alex Good Ending:
   - Affection >= 90
   - Completed 10 key events
   - Corruption < 30
+  - Week >= 12
   - Player triggers "Proposal" event
 ```
 
@@ -382,28 +479,29 @@ Example: Scam Event
 
 ## Game Flow Example
 
-### Day 3 Afternoon - Cafe Visit
+### Week 2, Wednesday Afternoon - Cafe Visit
 
 ```
 1. Player: "Go to Cafe"
    → EnterLocationUseCase
    → Display: Background + Visible interaction points
+   → Current: Week 2, Wednesday, Afternoon, Spring
 
-2. Player clicks: "Window Seat"
+2. Player clicks: "Window Seat" (7th time total)
    → InteractWithPointUseCase
-   → Check interaction count: 1 (first time)
-   → Trigger: "Meet Alex" event (Major Story)
+   → Check interaction count: 7
+   → Trigger: "Regular Customer" event (Minor Branch)
 
 3. Event executes:
-   → Dialogue displays
-   → Player chooses: "Kind response"
-   → Effects: alex_affection +5, charm +2
-   → Time advances: Afternoon → Evening
-   → Force exit scene
+   → Dialogue displays: "You're a regular now!"
+   → Player chooses: "Accept discount"
+   → Effects: alex_affection +5, money +50
+   → Time: No consumption (Minor Event)
+   → Can continue exploring
 
-4. Return to map
-   → Player can choose next location
-   → Stamina check before actions
+4. Player continues exploring
+   → Clicks "Counter"
+   → Triggers another event
 ```
 
 ---
@@ -421,6 +519,7 @@ Example: Scam Event
 - Multiple character routes
 - Different corruption paths
 - Hidden events to discover
+- Seasonal content variations
 
 ### Narrative Focus
 - Mechanics serve story
@@ -444,11 +543,32 @@ Example: Scam Event
 - Relationship count unlimited (but jealousy risk)
 
 ### Time Limits
-- No hard day limit (game doesn't end)
+- No hard week/day limit (game doesn't end)
 - Endings available when conditions met
 - Player decides when to finish
+- Seasonal events may have week requirements
 
 ---
 
-**Last Updated**: 2025-10-16  
-**Version**: 1.0
+## Summary of Time Progression
+
+```
+Granular → Abstract
+
+Time Slot:  Morning → Afternoon → Evening → Night
+            (4 per day)
+            
+Day:        Monday → Tuesday → ... → Sunday
+            (7 per week)
+            
+Week:       Week 1 → Week 2 → Week 3 → ...
+            (unlimited)
+            
+Season:     Spring → Summer → Autumn → Winter
+            (event-triggered, not time-based)
+```
+
+---
+
+**Last Updated**: 2025-10-23  
+**Version**: 1.1 (Added Weekly & Seasonal Systems)

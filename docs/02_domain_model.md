@@ -6,30 +6,25 @@
 ┌─────────────────────────────────────────────────┐
 │         Domain Layer (No Dependencies)          │
 │                                                 │
-│  Aggregates (Entity Clusters)                  │
-│    • Player (Root)                              │
-│    • Location                                   │
-│    • Character                                  │
+│  Aggregate Root                                 │
+│    • GameState (Root)                           │
 │                                                 │
-│  Entities (Identity-based)                     │
-│    • InteractionPoint                           │
-│    • GameEvent                                  │
+│  Entities                                       │
+│    • Player                                     │
+│    • Location                                   │
 │                                                 │
 │  Value Objects (Immutable)                     │
 │    • Stats                                      │
-│    • TimePoint                                  │
+│    • GameTime                                   │
+│    • Relationships                              │
 │    • Relationship                               │
 │    • InteractionHistory                         │
-│    • Buff                                       │
-│    • DialogueVariant                            │
+│    • InteractionRecord                          │
+│    • PlayerState                                │
+│    • Inventory                                  │
 │                                                 │
-│  Domain Services (Complex Logic)               │
-│    • ExplorationService                         │
-│    • EventTriggerService                        │
-│    • RelationshipService                        │
-│                                                 │
-│  Domain Events (State Changes)                 │
-│    • StatChanged                                │
+│  Domain Events (Phase 2)                       │
+│    • StatChangedSignificantly                   │
 │    • RelationshipUpdated                        │
 │    • NewDayStarted                              │
 └─────────────────────────────────────────────────┘
@@ -37,282 +32,319 @@
 
 ---
 
-## Player (Aggregate Root)
+## GameState (Aggregate Root)
 
 ### Structure
 ```
-Player
-├── id: PlayerId
-├── stats: Stats
-├── personality: Personality (mutable)
-├── currentTime: TimePoint
-├── currentLocation: LocationId
-├── money: int
-├── inventory: Inventory
-├── relationships: Map<CharacterId, Relationship>
-├── storyFlags: Set<String>
-├── activeBuffs: List<Buff>
-├── discoveredInteractionPoints: Map<LocationId, Set<InteractionPointId>>
-├── interactionHistories: Map<InteractionPointId, InteractionHistory>
-└── pendingHints: List<InteractionHint>
+GameState (Aggregate Root)
+├── player: Player
+├── playerState: PlayerState
+├── time: GameTime
+├── season: Season
+├── currentLocationId: String
+└── interactionHistory: InteractionHistory
 ```
 
 ### Key Behaviors
 
-**executeAction(action)**
-- Check stamina (unless buff immunity)
-- If stamina < cost → return must_rest error
-- Execute action effects
-- Deduct stamina
-- Emit domain events
-- Return result
-
-**rest()**
-- Forced behavior when stamina = 0
-- stamina = 100
-- currentTime = next day morning
-- Apply time passage effects
-- Emit NewDayStarted event
-
-**modifyStat(type, delta)**
-- Clamp to (0, 100)
-- If stamina becomes 0 → set must_rest flag
-- Emit StatChanged event if significant (|delta| >= 10)
-- Return new Player instance (immutable pattern)
-
 **advanceTime()**
-- Move to next time slot
-- If new day → apply cleanliness decay (-5)
+- Move to next time period
+- If night → advance to next day morning
+- If Sunday night → increment week
+- Apply time passage effects (cleanliness decay)
 - Emit NewDayStarted if day changed
-- Return new Player instance
+- Return new GameState instance
 
-**discoverInteractionPoint(locationId, pointId)**
-- Add to discoveredInteractionPoints
-- Used when hints unlock hidden locations
-- Return new Player instance
+**changeSeason(season)**
+- Triggered by special events (not automatic)
+- Update season enum
+- Affects location availability
+- Triggers seasonal event checks
+- Return new GameState instance
+
+**moveTo(locationId)**
+- Change current location
+- No time consumption for movement
+- Location validation in Application Layer
+- Return new GameState instance
 
 **recordInteraction(pointId, eventId)**
-- Increment interactionHistories[pointId].totalInteractions
+- Record interaction at specific point
+- Increment totalInteractions for point
 - Add eventId to completedEvents
-- Update lastInteractionTime
-- **Critical: totalInteractions persisted in save file**
+- Used for dialogue variant selection
+- Return new GameState instance
+
+**modifyStat/modifyAffection/modifyDomination**
+- Shortcut methods to avoid deep nesting
+- Delegate to Player methods
+- Return new GameState instance
 
 ### Domain Rules (Invariants)
 
-- Stamina always >= 0
-- All stats clamped to 0-100
-- Cannot execute actions when stamina = 0 (except rest)
-- StaminaImmunity buff bypasses stamina checks
-- Personality can change via corruption events or courses
+- GameState is the only entry point for state changes
+- All child entities/value objects modified through GameState
+- Season only changes via explicit changeSeason() call
+- currentLocationId always valid (checked in Application Layer)
+- InteractionHistory never cleared (permanent record)
 
 ---
 
 ## Value Objects
 
-### Stats
+### GameTime
 
 ```
-Stats (Immutable)
-├── stamina: int (0-100)
-├── charm: int (0-100)
-├── corruption: int (0-100)
-├── intelligence: int (0-100)
-└── cleanliness: int (0-100)
+GameTime (Immutable)
+├── week: int (1, 2, 3, ...)
+├── weekday: Weekday (enum)
+└── period: TimeOfDay (enum)
 
-Factory Methods:
-  • Stats.initial() → Default starting values
-  • Stats.create(...) → Validated creation
-  • modify(type, delta) → New Stats instance
-  • getValue(type) → int
-```
+Weekday Enum:
+  • monday, tuesday, wednesday, thursday
+  • friday, saturday, sunday
 
-**Validation Rules:**
-- All values automatically clamped to 0-100
-- No negative values allowed
-- Immutable (every modification returns new instance)
-
----
-
-### TimePoint
-
-```
-TimePoint (Immutable)
-├── day: int
-└── timeSlot: TimeSlot (enum)
-
-TimeSlot Enum:
+TimeOfDay Enum:
   • morning
   • afternoon
   • evening
   • night
 
 Methods:
-  • next() → TimePoint (advance one slot)
-  • isNewDay → bool (check if transitioning to morning)
+  • advance() → GameTime (next period)
+  • advanceToNextDay() → GameTime (next day morning)
+  • advanceToWeekday(target) → GameTime (skip to weekday)
+  • isWeekend() → bool
+  • isWorkday() → bool
 ```
+
+**Design Decision:**
+- Season NOT in GameTime (separate field in GameState)
+- Week counter tracks game progression
+- Simple linear time flow
 
 ---
 
-### Relationship
+### Season
+
+```
+Season (Enum)
+  • spring
+  • summer
+  • autumn
+  • winter
+```
+
+**Design Decision:**
+- Not time-based (won't auto-advance)
+- Changed via special events
+- Separate from GameTime
+
+---
+
+### Stats
+
+```
+Stats (Immutable)
+├── _values: Map<String, int>
+│
+Factory Methods:
+  • Stats.initial() → Default 5 attributes
+  • get(statName) → int (0 if not exists)
+  • modify(statName, delta) → Stats (clamp 0-100)
+  • set(statName, value) → Stats (clamp 0-100)
+  • has(statName) → bool
+  • getAll() → Map<String, int>
+
+Default Attributes:
+  • stamina: 50
+  • charm: 50
+  • intelligence: 50
+  • corruption: 0  (starts pure)
+  • cleanliness: 50
+```
+
+**Validation Rules:**
+- All values automatically clamped to 0-100
+- Map implementation allows YAML to add new stats
+- Immutable (every modification returns new instance)
+
+---
+
+### Relationships & Relationship
 
 ```
 Relationship (Immutable)
-├── characterId: CharacterId
+├── characterId: String
 ├── affection: int (0-100)
-├── level: RelationshipLevel (computed from affection)
-├── status: RelationshipStatus
-└── leverageCount: int
-
-RelationshipLevel (Computed):
-  • Stranger: 0-20
-  • Acquaintance: 21-40
-  • Friend: 41-60
-  • Close: 61-80
-  • Lover: 81-100
-
-RelationshipStatus (Enum):
-  • Normal: Default state
-  • Dating: Confirmed relationship
-  • Dominated: Via leverage items, no jealousy
-  • EndingReached: Character route completed
+└── domination: int (0-100)
 
 Methods:
-  • modify(delta) → Relationship
-  • addLeverage() → Relationship (leverageCount++)
-  • checkDomination() → bool (leverageCount >= 3)
+  • modifyAffection(delta) → Relationship
+  • modifyDomination(delta) → Relationship
+
+Computed Properties (Future):
+  • level → RelationshipLevel (from affection)
+  • isDominated → bool (domination >= 80)
+```
+
+```
+Relationships (Value Object Collection)
+├── _data: Map<String, Relationship>
+│
+Methods:
+  • get(characterId) → Relationship?
+  • modifyAffection(characterId, delta) → Relationships
+  • modifyDomination(characterId, delta) → Relationships
+  • getAll() → List<Relationship>
+  • has(characterId) → bool
+
+Initialization:
+  • First interaction creates relationship with:
+    - affection: 50 + delta (clamped)
+    - domination: 0
+```
+
+**Design Decision:**
+- Dual-value system (affection + domination)
+- Domination increased via YAML events/items
+- Writers control gain per item (flexible balancing)
+- No leverageCount (use domination value instead)
+
+**YAML Integration:**
+```yaml
+event_get_photo:
+  effects:
+    - type: modify_domination
+      character: alice
+      delta: 20  # Photo +20
+
+item_video_evidence:
+  on_use:
+    - type: modify_domination
+      character: bob
+      delta: 50  # Video +50 (more powerful)
 ```
 
 ---
 
-### InteractionHistory
+### InteractionHistory & InteractionRecord
 
 ```
 InteractionHistory (Value Object)
-├── pointId: InteractionPointId
-├── totalInteractions: int ⭐ Persisted in save
-├── completedEvents: Set<EventId>
-├── lastInteractionTime: TimePoint?
-└── (optional) interactionTimeline: List<InteractionRecord>
-
+├── _records: Map<String, InteractionRecord>
+│
 Methods:
-  • recordInteraction(eventId, time) → InteractionHistory
-  • canRepeat(event, currentTime) → bool
-  • getInteractionCount() → int
+  • getInteractionCount(pointId) → int
+  • hasCompletedEvent(eventId) → bool
+  • recordInteraction(pointId, eventId) → InteractionHistory
+  • getInteractedPoints() → List<String>
+```
+
+```
+InteractionRecord (Value Object)
+├── pointId: String
+├── totalInteractions: int  ⭐ Persisted forever
+├── completedEvents: Set<String>
+│
+Methods:
+  • recordEvent(eventId) → InteractionRecord (totalInteractions++)
 ```
 
 **Critical Design Decision:**
+- Tracks interactions **per point**, not per event
 - `totalInteractions` stored permanently in save files
-- Enables dialogue variants based on total interaction count
-- Example: 7th visit to cafe counter shows "regular customer" dialogue
+- Enables "7th visit to cafe counter" dialogue variants
+- Example:
+  ```
+  Player clicks "cafe_counter" 7 times:
+    - InteractionRecord.totalInteractions = 7
+    - YAML event uses this for variant selection
+  ```
+
+**Usage Pattern:**
+```dart
+// Application Layer
+final count = gameState.getInteractionCount('cafe_counter');
+// count = 7
+
+// YAML Definition
+event_cafe_counter:
+  dialogue_variants:
+    1: "Welcome! First time here?"
+    2: "Back again?"
+    5: "You're a regular now!"  # Used for count >= 5
+```
 
 ---
 
-### Buff
+### PlayerState
 
 ```
-Buff (Value Object)
-├── id: BuffId
-├── type: BuffType
-├── duration: BuffDuration
-└── sourceItem: ItemId?
-
-BuffType (Enum):
-  • StaminaImmunity: Ignore stamina costs
-  • SeeCards: Cheat in minigames
-  • DoubleReward: 2x event rewards
-  • ImmuneToJealousy: No multi-romance penalties
-  • AttributeProtection: Prevent stat decreases
-
-BuffDuration (Enum):
-  • TimeBasedDuration(expiresAt: TimePoint)
-  • EventBasedDuration(remainingEvents: int)
-  • Permanent
+PlayerState (Value Object)
+├── inventory: Inventory
+├── wearing: String? (equipped item ID)
+└── statusEffects: Set<String>
 
 Methods:
-  • isActive(currentTime) → bool
-  • consume() → Buff? (for event-based, null if exhausted)
+  • hasItem(itemId) → bool
+  • addItem(itemId, count) → PlayerState
+  • removeItem(itemId, count) → PlayerState
+  • equipItem(itemId) → PlayerState
+  • unequipItem() → PlayerState
+  • hasStatus(status) → bool
+  • addStatus(status) → PlayerState
+  • removeStatus(status) → PlayerState
+```
+
+```
+Inventory (Value Object)
+├── _items: Map<String, int>  # itemId → count
+│
+Methods:
+  • hasItem(itemId) → bool
+  • getCount(itemId) → int
+  • addItem(itemId, count) → Inventory
+  • removeItem(itemId, count) → Inventory
+  • getAll() → Map<String, int>
+
+Validation:
+  • removeItem() throws InsufficientItemException if count < needed
 ```
 
 ---
 
 ## Entities
 
-### InteractionPoint
+### Player
 
 ```
-InteractionPoint (Entity)
-├── id: InteractionPointId
+Player (Entity)
+├── id: String
 ├── name: String
-├── position: Position (x, y)
-├── visibility: Visibility
-├── discoveryHint: DiscoveryHint?
-├── events: List<ConditionalEvent>
-├── fallbackDialogue: Dialogue
-└── state: InteractionState
-
-Visibility (Enum):
-  • AlwaysVisible: Functional points (counter, NPC)
-  • HiddenUntilDiscovered: Hidden points (trash can)
-  • ConditionalVisible: Stat threshold reveals
-
-InteractionState (Enum):
-  • Undiscovered: Player hasn't found yet
-  • Available: Can interact
-  • (Exhausted state removed - use fallback instead)
+├── stats: Stats
+├── relationships: Relationships
+└── flags: Map<String, dynamic>
 
 Methods:
-  • isVisibleTo(player) → bool
-  • getAvailableEvent(player, interactionCount) → EventId?
-  • afterEventCompleted(eventId) → void
-  • getFallbackDialogue() → Dialogue
+  • modifyStat(statName, delta) → Player
+  • setStat(statName, value) → Player
+  • modifyAffection(characterId, delta) → Player
+  • modifyDomination(characterId, delta) → Player
+  • setFlag(key, value) → Player
+  • getFlag(key) → dynamic
+  • hasFlag(key) → bool
+  • removeFlag(key) → Player
+
+Identity:
+  • Equality based on id only
+  • Immutable (all modifications return new instance)
 ```
 
----
-
-### ConditionalEvent
-
-```
-ConditionalEvent (Value Object)
-├── eventId: EventId
-├── type: EventType
-├── timeConsumption: TimeConsumption
-├── forceLeaveScene: bool
-├── conditions: List<Condition>
-├── priority: int
-├── repeatability: Repeatability
-├── randomChance: float?
-└── dialogueVariants: Map<int, DialogueVariant>
-
-EventType (Enum):
-  • MajorStory: Consumes time, forces exit
-  • MinorBranch: No time, can continue exploring
-
-TimeConsumption:
-  • None: 0 time slots
-  • OneSlot: 1 time slot
-  • Custom(int): N time slots
-
-Repeatability (Enum):
-  • Once: One-time event
-  • Daily: Once per day
-  • Unlimited: No restrictions
-  • ConditionalRepeat: Check conditions each time
-
-Methods:
-  • canTrigger(player, interactionCount) → bool
-  • getDialogue(interactionCount) → Dialogue
-```
-
-**Dialogue Variant Selection:**
-```
-interactionCount = 7
-dialogueVariants = {1: "first", 2: "second", 5: "fifth+"}
-
-Selection logic:
-  - Exact match? Return 7 if exists
-  - Otherwise: Find largest key <= 7
-  - Result: Use key 5 ("fifth+")
-```
+**Design Decision:**
+- Player is an Entity (has identity)
+- NOT an Aggregate Root (GameState is)
+- Flags use Map<String, dynamic> for YAML flexibility
 
 ---
 
@@ -320,112 +352,32 @@ Selection logic:
 
 ```
 Location (Entity)
-├── id: LocationId
-├── name: String
-├── backgroundImage: String
-├── interactionPoints: List<InteractionPoint>
-├── initialVisiblePoints: Set<InteractionPointId>
-├── basicActions: List<ActionId>
-└── unlockConditions: List<Condition>
+├── id: String
+└── parentId: String?
 
 Methods:
-  • getVisiblePoints(player) → List<InteractionPoint>
-    Returns: initialVisiblePoints 
-           + player.discoveredInteractionPoints
-           + conditionalVisible (if conditions met)
-  
-  • getInteractablePoints(player) → List<InteractionPoint>
-    Filter out Undiscovered state
+  • isChildOf(locationId) → bool
+  • isRoot() → bool
+
+Identity:
+  • Equality based on id only
+
+Hierarchy Example:
+  home (root)
+  ├─ kitchen (parent: home)
+  │  ├─ stove (parent: kitchen)
+  │  └─ fridge (parent: kitchen)
+  └─ bedroom (parent: home)
 ```
+
+**Design Decision:**
+- Location is Entity (has parent-child relationships)
+- GameState stores only currentLocationId (String)
+- Full location data (name, background, interaction points) in Infrastructure Layer
 
 ---
 
-### Character
-
-```
-Character (Entity)
-├── id: CharacterId
-├── name: String
-├── personality: CharacterPersonality
-├── corruptionRange: Range<int>
-├── dominationRequirement: DominationRequirement
-└── endingConditions: List<EndingCondition>
-
-DominationRequirement:
-  • leverageItemCount: int (e.g., 3)
-  • OR eventCompleted: EventId
-
-CorruptionRange Examples:
-  • Pure character: (0, 30)
-  • Neutral character: (20, 70)
-  • Corrupt character: (60, 100)
-
-Methods:
-  • isRouteAccessible(playerCorruption) → bool
-  • canBeDominated(player) → bool
-```
-
----
-
-## Domain Services
-
-### ExplorationService
-
-```
-ExplorationService
-└── explore(player, location) → ExplorationResult
-
-Process:
-  1. Get visible interaction points
-  2. For each point: check available events
-  3. Return list of interactable points
-  
-Not responsible for:
-  • Executing events (that's ExecuteEventUseCase)
-  • Just identifies what's available
-```
-
----
-
-### EventTriggerService
-
-```
-EventTriggerService
-└── checkTriggers(player, location) → List<GameEvent>
-
-Process:
-  1. Get all events in location
-  2. Filter by conditions (time, stats, flags)
-  3. Sort by priority (high to low)
-  4. Return triggerable events
-
-Used by:
-  • Auto-trigger systems (enter location, time advance)
-  • Not for manual interaction points
-```
-
----
-
-### RelationshipService
-
-```
-RelationshipService
-├── checkDominationStatus(player, charId) → bool
-└── calculateJealousyRisk(player) → List<CharacterId>
-
-Methods:
-  • checkDominationStatus: 
-    Check leverageCount >= 3 OR special event flag
-    Return true if character should be dominated
-  
-  • calculateJealousyRisk:
-    Find all characters with status=Dating
-    Return list of characters who might get jealous
-```
-
----
-
-## Domain Events
+## Domain Events (Phase 2)
 
 ### Purpose
 Domain events notify other parts of the system about state changes without coupling.
@@ -435,41 +387,65 @@ Domain events notify other parts of the system about state changes without coupl
 **StatChangedSignificantly**
 ```
 StatChangedSignificantly
-├── playerId: PlayerId
-├── statType: StatType
+├── playerId: String
+├── statName: String
 ├── oldValue: int
 ├── newValue: int
 └── timestamp: DateTime
+
+Trigger Condition:
+  • |newValue - oldValue| >= 10
 ```
 
-**RelationshipLevelChanged**
+**RelationshipChanged**
 ```
-RelationshipLevelChanged
-├── playerId: PlayerId
-├── characterId: CharacterId
-├── oldLevel: RelationshipLevel
-├── newLevel: RelationshipLevel
+RelationshipChanged
+├── playerId: String
+├── characterId: String
+├── affectionDelta: int
+├── dominationDelta: int
 └── timestamp: DateTime
+
+Trigger Condition:
+  • Any change to affection or domination
 ```
 
 **NewDayStarted**
 ```
 NewDayStarted
-├── playerId: PlayerId
-├── day: int
+├── playerId: String
+├── week: int
+├── weekday: Weekday
 └── timestamp: DateTime
 ```
 
-### Usage Pattern
+**NewWeekStarted**
+```
+NewWeekStarted
+├── playerId: String
+├── week: int
+└── timestamp: DateTime
+```
+
+**SeasonChanged**
+```
+SeasonChanged
+├── playerId: String
+├── oldSeason: Season
+├── newSeason: Season
+└── timestamp: DateTime
+```
+
+### Usage Pattern (Phase 2)
 ```dart
 // Domain layer emits
 player._domainEvents.add(StatChangedSignificantly(...));
 
 // Application layer handles
-for (final event in player.domainEvents) {
+for (final event in gameState.domainEvents) {
   _eventBus.publish(event);
 }
-player.clearEvents();
+gameState.clearEvents();
 ```
 
 ---
@@ -478,39 +454,36 @@ player.clearEvents();
 
 Defined in Domain Layer, implemented in Infrastructure Layer.
 
-### PlayerRepository
+### GameStateRepository
 ```
-abstract class PlayerRepository {
-  Future<Player> get();
-  Future<void> save(Player player);
+abstract class GameStateRepository {
+  Future<GameState> get();
+  Future<void> save(GameState state);
   Future<List<SaveSlot>> getSaveSlots();
-  Future<Player?> loadFromSlot(int slot);
-  Future<void> saveToSlot(int slot, Player player);
+  Future<GameState?> loadFromSlot(int slot);
+  Future<void> saveToSlot(int slot, GameState state);
 }
 ```
 
 ### LocationRepository
 ```
 abstract class LocationRepository {
-  Future<Location> getById(LocationId id);
+  Future<Location> getById(String id);
   Future<List<Location>> getAll();
-  Future<List<Location>> getUnlocked(Player player);
+  Future<List<Location>> getUnlocked(GameState state);
+  Future<List<Location>> getByParent(String parentId);
 }
 ```
 
-### EventRepository
+### EventDefinitionRepository (Infrastructure)
 ```
-abstract class EventRepository {
-  Future<GameEvent> getById(EventId id);
-  Future<List<GameEvent>> getTriggerable(Player player, Location location);
-}
-```
-
-### CharacterRepository
-```
-abstract class CharacterRepository {
-  Future<Character> getById(CharacterId id);
-  Future<List<Character>> getAvailableRoutes(Player player);
+abstract class EventDefinitionRepository {
+  Future<EventDefinition> getById(String id);
+  Future<List<EventDefinition>> getTriggerable(
+    GameState state,
+    String pointId,
+    int interactionCount,
+  );
 }
 ```
 
@@ -527,72 +500,76 @@ abstract class CharacterRepository {
 **Value Objects:**
 ```dart
 test('Stats clamps values to 0-100', () {
-  final stats = Stats.create(stamina: 150, charm: -10, ...);
-  expect(stats.stamina, 100);
-  expect(stats.charm, 0);
+  final stats = Stats.initial().modify('stamina', 150);
+  expect(stats.get('stamina'), 100);
 });
 
-test('TimePoint advances correctly', () {
-  final time = TimePoint(day: 1, timeSlot: TimeSlot.morning);
-  final next = time.next();
-  expect(next.timeSlot, TimeSlot.afternoon);
-  expect(next.day, 1);
+test('GameTime advances correctly through week', () {
+  var time = GameTime(week: 1, weekday: Weekday.sunday, period: TimeOfDay.night);
+  time = time.advance();
+  
+  expect(time.week, 2);
+  expect(time.weekday, Weekday.monday);
+  expect(time.period, TimeOfDay.morning);
 });
 
-test('Relationship level computed from affection', () {
-  final rel = Relationship(characterId: 'alex', affection: 55);
-  expect(rel.level, RelationshipLevel.friend);
+test('Relationship domination increases correctly', () {
+  final rel = Relationship(
+    characterId: 'alice',
+    affection: 50,
+    domination: 0,
+  );
+  
+  final updated = rel.modifyDomination(20);
+  
+  expect(updated.domination, 20);
+  expect(updated.affection, 50); // Unchanged
+});
+
+test('InteractionHistory tracks per point', () {
+  var history = InteractionHistory.empty();
+  
+  // Click "cafe_counter" 3 times with different events
+  history = history.recordInteraction('cafe_counter', 'event_1');
+  history = history.recordInteraction('cafe_counter', 'event_2');
+  history = history.recordInteraction('cafe_counter', 'event_1');
+  
+  expect(history.getInteractionCount('cafe_counter'), 3);
+  expect(history.hasCompletedEvent('event_1'), true);
+  expect(history.hasCompletedEvent('event_2'), true);
 });
 ```
 
 **Entities:**
 ```dart
-test('Player.modifyStat emits event when significant', () {
-  final player = Player.newGame();
-  final updated = player.modifyStat(StatType.charm, 15);
+test('GameState.recordInteraction updates history', () {
+  final state = GameState.initial(playerId: 'p1', playerName: 'Test');
   
-  expect(updated.domainEvents.length, 1);
-  expect(updated.domainEvents.first, isA<StatChangedSignificantly>());
+  final updated = state.recordInteraction('cafe_counter', 'meet_alice');
+  
+  expect(updated.getInteractionCount('cafe_counter'), 1);
+  expect(updated.interactionHistory.hasCompletedEvent('meet_alice'), true);
 });
 
-test('Player.rest() forces new day', () {
-  var player = Player.newGame();
-  player = player.modifyStat(StatType.stamina, -100); // stamina = 0
-  
-  final rested = player.rest();
-  
-  expect(rested.stats.stamina, 100);
-  expect(rested.currentTime.day, 2);
-  expect(rested.currentTime.timeSlot, TimeSlot.morning);
-});
-
-test('InteractionPoint selects correct dialogue variant', () {
-  final point = InteractionPoint(
-    dialogueVariants: {
-      1: DialogueVariant(text: "First time"),
-      5: DialogueVariant(text: "Regular"),
-    },
+test('GameState.advanceTime handles week transition', () {
+  var state = GameState.initial(playerId: 'p1', playerName: 'Test');
+  state = state.copyWith(
+    time: GameTime(week: 1, weekday: Weekday.sunday, period: TimeOfDay.night),
   );
   
-  expect(point.getDialogue(1).text, "First time");
-  expect(point.getDialogue(3).text, "First time"); // Uses closest
-  expect(point.getDialogue(7).text, "Regular");
+  final updated = state.advanceTime();
+  
+  expect(updated.time.week, 2);
+  expect(updated.time.weekday, Weekday.monday);
 });
-```
 
-**Domain Services:**
-```dart
-test('EventTriggerService filters by conditions', () {
-  final player = Player.newGame().modifyStat(StatType.charm, 30);
-  final events = [
-    GameEvent(conditions: [CharmCondition(min: 50)]), // Should fail
-    GameEvent(conditions: [CharmCondition(min: 20)]), // Should pass
-  ];
+test('Player.modifyDomination creates new instance', () {
+  final player = Player.create(id: 'p1', name: 'Test');
   
-  final service = EventTriggerService();
-  final triggerable = service.checkTriggers(player, events);
+  final updated = player.modifyDomination('alice', 30);
   
-  expect(triggerable.length, 1);
+  expect(updated.relationships.get('alice')?.domination, 30);
+  expect(player.relationships.get('alice'), isNull); // Original unchanged
 });
 ```
 
@@ -602,33 +579,45 @@ test('EventTriggerService filters by conditions', () {
 
 ### Critical Invariants
 
-1. **Stamina Boundary**: 0 <= stamina <= 100, never negative
-2. **Forced Rest**: When stamina = 0, only rest() allowed
-3. **Stat Clamping**: All stats automatically clamp to 0-100
-4. **Immutability**: All value objects are immutable
-5. **Event Ordering**: Priority determines event selection when multiple match
-6. **Interaction Counting**: totalInteractions persisted forever
-7. **Time Progression**: Only certain events consume time
-8. **Scene Exit**: Major story events force leaving scene
+1. **Stat Boundaries**: 0 <= value <= 100, auto-clamped
+2. **Immutability**: All value objects immutable
+3. **Aggregate Boundary**: GameState is sole entry point
+4. **Season Independence**: Season only changes via events
+5. **Interaction Permanence**: InteractionHistory never cleared
+6. **Location References**: GameState stores ID only, not object
+7. **First Interaction**: Auto-creates relationship with affection=50
 
 ### Business Logic Examples
+
+**Domination Threshold:**
+```
+IF relationship.domination >= 80 THEN
+  character accepts multi-romance
+  no jealousy events
+END IF
+```
 
 **Corruption Route Locking:**
 ```
 IF player.corruption >= 60 THEN
-  pure_characters.forEach(char => char.routeLocked = true)
-```
-
-**Domination Check:**
-```
-IF relationship.leverageCount >= 3 OR hasFlag("dominated_" + charId) THEN
-  relationship.status = Dominated
+  pure_character_routes.forEach(route => route.locked = true)
+END IF
 ```
 
 **Dialogue Variant Selection:**
 ```
-interactionCount = player.getInteractionCount(pointId)
-variant = findClosestVariant(event.dialogueVariants, interactionCount)
+interactionCount = gameState.getInteractionCount(pointId)
+variants = event.dialogueVariants
+selectedKey = max(variants.keys.where(k => k <= interactionCount))
+dialogue = variants[selectedKey]
+```
+
+**Week-Specific Events:**
+```
+IF gameState.time.week >= 5 AND gameState.time.weekday == Weekday.saturday THEN
+  unlock_festival_event()
+END IF
+
 ```
 
 ---
@@ -636,57 +625,169 @@ variant = findClosestVariant(event.dialogueVariants, interactionCount)
 ## Design Patterns Used
 
 ### Aggregate Pattern
-- **Player** is the aggregate root
-- All player-related data modified through Player methods
-- Ensures consistency across stats, relationships, flags
+- **GameState** is the aggregate root
+- All game state modifications through GameState methods
+- Ensures consistency across player, time, season, interactions
 
 ### Value Object Pattern
-- Stats, TimePoint, Relationship are immutable
+- Stats, GameTime, Relationship, InteractionHistory are immutable
 - Every modification returns new instance
 - Prevents accidental mutation bugs
 
-### Domain Events Pattern
-- State changes emit events
-- Application layer subscribes to events
-- Decouples domain from infrastructure
+### Entity Pattern
+- Player and Location have identity (compared by ID)
+- But still immutable (modifications return new instances)
+- Part of GameState aggregate, not independent roots
 
 ### Repository Pattern
 - Interfaces in domain layer
 - Implementations in infrastructure layer
 - Enables testing without real persistence
 
-### Strategy Pattern
-- BuffType determines behavior
-- EventType determines time consumption
-- Repeatability determines when events can retrigger
-
 ---
 
 ## Key Design Decisions
 
-### Why Immutable Value Objects?
-- **Thread safety**: No race conditions
-- **Predictability**: State changes explicit
-- **Testing**: Easier to verify state transitions
-- **Time travel**: Can snapshot states easily
+### Why GameState as Aggregate Root (not Player)?
 
-### Why Domain Events?
-- **Decoupling**: UI doesn't depend on domain
-- **Extensibility**: Easy to add new event listeners
-- **Audit trail**: All state changes recorded
-- **Testing**: Can verify events emitted
+**Old Design (02_domain_model.md v1.0):**
+```dart
+Player (Aggregate Root)
+├── stats, personality, currentTime, currentLocation
+├── money, inventory, relationships, flags
+└── activeBuffs, discoveredInteractionPoints, interactionHistories
+```
 
-### Why Aggregate Root?
-- **Consistency**: Single point of truth
-- **Encapsulation**: Business rules enforced
-- **Transactional**: All changes atomic
-- **Simplicity**: Clear ownership boundaries
+**Problems:**
+- Player too fat (violates Single Responsibility)
+- Time/Season mixed with player data (wrong conceptually)
+- Hard to add world state later (weather, NPCs)
 
-### Why Repository Interfaces?
-- **Testability**: Can mock persistence
-- **Flexibility**: Can swap storage backend
-- **Dependency Inversion**: Domain doesn't depend on infrastructure
-- **Clean Architecture**: Maintains layer boundaries
+**New Design (02_domain_model.md v1.1):**
+```dart
+GameState (Aggregate Root)
+├── player: Player (just player data)
+├── playerState: PlayerState (inventory, status)
+├── time: GameTime (temporal state)
+├── season: Season (world state)
+├── currentLocationId: String (spatial state)
+└── interactionHistory: InteractionHistory (progress tracking)
+```
+
+**Benefits:**
+- Clear separation of concerns
+- Easy to add world-level state (NPCs, weather)
+- Player is focused (name, stats, relationships, flags)
+- Better aligns with DDD principles
+
+---
+
+### Why InteractionHistory by Point (not by Event)?
+
+**Requirement from 01_game_mechanics.md:**
+```
+Dialogue changes with interaction count:
+  - 1st click: "Welcome! First time here?"
+  - 2nd-4th clicks: "Back again?"
+  - 5th+ clicks: "Regular customer!"
+```
+
+This is **"Nth time clicking THIS POINT"**, not "Nth time triggering THIS EVENT".
+
+**Alternative Considered:**
+```dart
+// ❌ By Event (rejected)
+class EventHistory {
+  Map<String, int> _eventCount;  // eventId → count
+}
+```
+
+**Problem:** Different events at same point wouldn't share count.
+
+**Chosen Design:**
+```dart
+// ✅ By Point (correct)
+class InteractionHistory {
+  Map<String, InteractionRecord> _records;  // pointId → record
+}
+
+class InteractionRecord {
+  int totalInteractions;  // Total clicks on THIS point
+  Set<String> completedEvents;  // Which events triggered
+}
+```
+
+**Benefits:**
+- Matches game design ("7th visit to cafe")
+- Supports dialogue progression naturally
+- Can still track which events completed
+
+---
+
+### Why Domination as Numeric Value (not Item Count)?
+
+**Alternative Considered:**
+```dart
+// ❌ Item Counter (rejected)
+class Relationship {
+  int leverageCount;
+  bool isDominated => leverageCount >= 3;
+}
+```
+
+**Problems:**
+- All leverage items equal (photo = video = blackmail)
+- No flexibility for writers
+- Code changes needed for balancing
+
+**Chosen Design:**
+```dart
+// ✅ Numeric Value (YAML-driven)
+class Relationship {
+  int domination;  // 0-100
+  bool isDominated => domination >= 80;
+}
+```
+
+**Benefits:**
+- Writers control power per item in YAML
+- Photo +20, Video +50, Blackmail +30 (flexible)
+- No code changes for balancing
+- Can have non-item domination sources (events)
+
+---
+
+### Why Season Separate from GameTime?
+
+**Alternative Considered:**
+```dart
+// ❌ Season in GameTime (rejected)
+class GameTime {
+  int week;
+  Weekday weekday;
+  TimeOfDay period;
+  Season season;  // Auto-advances every 13 weeks?
+}
+```
+
+**Problems:**
+- Seasons tied to time (game design wants event-driven)
+- What if game ends at week 8? (never see all seasons)
+- Time advancement logic becomes complex
+
+**Chosen Design:**
+```dart
+// ✅ Season separate (event-driven)
+class GameState {
+  GameTime time;
+  Season season;  // Changed via changeSeason()
+}
+```
+
+**Benefits:**
+- Season changes at narrative moments (Valentine → Spring)
+- Player can experience all seasons regardless of week count
+- Simple time advancement logic
 
 ---
 
@@ -696,7 +797,8 @@ variant = findClosestVariant(event.dialogueVariants, interactionCount)
 ```dart
 // Wrong
 class Player {
-  String getDisplayName() => "Player: $name"; // UI concern
+  String getDisplayName() => "Player: $name";  // UI concern
+  Color getCorruptionColor() => ...;  // UI concern
 }
 ```
 
@@ -704,11 +806,12 @@ class Player {
 ```dart
 // Correct
 class Player {
-  String get name => _name; // Just data
+  String get name => _name;  // Just data
 }
 
 // In presentation layer:
 String displayName = "Player: ${player.name}";
+Color color = player.stats.get('corruption') > 50 ? red : blue;
 ```
 
 ---
@@ -716,17 +819,24 @@ String displayName = "Player: ${player.name}";
 ### ❌ Don't: Return nulls for missing data
 ```dart
 // Wrong
-Relationship? getRelationship(CharacterId id) {
-  return relationships[id]; // Null if not found
+Relationship? getRelationship(String characterId) {
+  return relationships.get(characterId);  // Null if not found
 }
 ```
 
-### ✅ Do: Use Result type or default values
+### ✅ Do: Use default values or explicit checks
 ```dart
-// Correct
-Relationship getRelationship(CharacterId id) {
-  return relationships[id] ?? Relationship.stranger(id);
+// Correct Option 1: Return default
+Relationship getRelationship(String characterId) {
+  return relationships.get(characterId) 
+    ?? Relationship.stranger(characterId);
 }
+
+// Correct Option 2: Let caller handle null
+Relationship? getRelationship(String characterId) {
+  return relationships.get(characterId);
+}
+// Caller: final rel = getRelationship('alice') ?? Relationship.stranger('alice');
 ```
 
 ---
@@ -734,13 +844,18 @@ Relationship getRelationship(CharacterId id) {
 ### ❌ Don't: Mutate value objects
 ```dart
 // Wrong
-stats.stamina += 10; // Mutation!
+stats._values['stamina'] = 100;  // Mutation!
+player.stats.modify('charm', 10);  // Returns new, but not assigned!
 ```
 
-### ✅ Do: Return new instances
+### ✅ Do: Reassign to new instances
 ```dart
 // Correct
-final newStats = stats.modify(StatType.stamina, 10);
+final newStats = stats.modify('stamina', -10);
+player = player.copyWith(stats: newStats);
+
+// Or shortcut
+gameState = gameState.modifyStat('stamina', -10);
 ```
 
 ---
@@ -750,7 +865,7 @@ final newStats = stats.modify(StatType.stamina, 10);
 // Wrong
 import 'package:shared_preferences/shared_preferences.dart';
 
-class Player {
+class GameState {
   Future<void> save() async {
     final prefs = await SharedPreferences.getInstance();
     // ...
@@ -760,14 +875,13 @@ class Player {
 
 ### ✅ Do: Use repository interfaces
 ```dart
-// Correct
-// Domain defines interface
-abstract class PlayerRepository {
-  Future<void> save(Player player);
+// Correct - Domain defines interface
+abstract class GameStateRepository {
+  Future<void> save(GameState state);
 }
 
 // Infrastructure implements
-class PlayerRepositoryImpl implements PlayerRepository {
+class GameStateRepositoryImpl implements GameStateRepository {
   final SharedPreferences _prefs;
   // ...
 }
@@ -775,15 +889,146 @@ class PlayerRepositoryImpl implements PlayerRepository {
 
 ---
 
-## Next Steps
+## Differences from v1.0
 
-After implementing Domain Layer:
-1. Write comprehensive unit tests (target >80% coverage)
-2. Verify no dependencies on Flutter/infrastructure
-3. Document all domain rules and invariants
-4. Move to Application Layer (Use Cases)
+### Major Changes
+
+| Aspect               | v1.0 (Old)                              | v1.1 (New)                                      | Reason                  |
+| -------------------- | --------------------------------------- | ----------------------------------------------- | ----------------------- |
+| Aggregate Root       | Player                                  | GameState                                       | Separation of concerns  |
+| Time Structure       | TimePoint(day, slot)                    | GameTime(week, weekday, period)                 | Added weekly/seasonal   |
+| Season               | Not mentioned                           | Separate enum                                   | Event-driven system     |
+| Relationship         | affection + leverageCount + status      | affection + domination                          | YAML-driven flexibility |
+| Interaction Tracking | InteractionHistory(pointId)             | InteractionHistory(pointId) + InteractionRecord | Same concept, refined   |
+| Player Buffs         | List<Buff> in Player                    | Set<String> statusEffects in PlayerState        | Simplified Phase 1      |
+| Domain Services      | ExplorationService, EventTriggerService | (Phase 2)                                       | Defer complexity        |
+
+### Migration Guide (if implementing v1.0)
+
+**If you started with v1.0 design:**
+
+1. **Extract time/season from Player**
+   ```dart
+   // Before
+   Player(currentTime, currentLocation, ...)
+   
+   // After
+   GameState(
+     player: Player(name, stats, ...),
+     time: GameTime(...),
+     currentLocationId: ...,
+   )
+   ```
+
+2. **Change Relationship structure**
+   ```dart
+   // Before
+   Relationship(affection, leverageCount, status)
+   
+   // After
+   Relationship(affection, domination)
+   ```
+
+3. **Update time methods**
+   ```dart
+   // Before
+   TimePoint.next() → day + 1
+   
+   // After
+   GameTime.advance() → handles week transitions
+   ```
+
+4. **Rename methods**
+   ```dart
+   // Before
+   eventHistory.recordTrigger(eventId)
+   
+   // After
+   interactionHistory.recordInteraction(pointId, eventId)
+   ```
 
 ---
 
-**Last Updated**: 2025-10-16  
-**Version**: 1.0
+## Phase 1 vs Phase 2 Features
+
+### Phase 1 (Current - Minimal Viable Domain)
+
+**Implemented:**
+- ✅ GameState as Aggregate Root
+- ✅ GameTime with week/weekday/period
+- ✅ Season enum (event-driven)
+- ✅ Stats (5 attributes, Map-based)
+- ✅ Relationships with affection + domination
+- ✅ InteractionHistory by point
+- ✅ PlayerState with Inventory
+- ✅ Location with parent-child
+- ✅ Basic domain exceptions
+
+**Not Implemented (kept simple):**
+- ❌ Domain Events
+- ❌ Domain Services
+- ❌ Complex Buff system
+- ❌ Computed properties on Relationship
+- ❌ Personality system
+
+### Phase 2 (Future - Advanced Features)
+
+**To Add:**
+- Domain Events (StatChanged, RelationshipChanged, etc.)
+- Domain Services (EventTriggerService, RelationshipService)
+- Complex Buff system (duration, stacking, effects)
+- Computed properties (RelationshipLevel from affection)
+- Personality system (affects dialogue choices)
+- Jealousy mechanics
+- Character route locking
+
+---
+
+## Next Steps
+
+After implementing Domain Layer:
+
+1. **Write comprehensive unit tests**
+   - Target >80% coverage
+   - Focus on business logic (Stats clamping, time advancement, interaction counting)
+   - Test all domain exceptions
+
+2. **Verify zero dependencies**
+   - No Flutter imports
+   - No Riverpod imports
+   - Only Dart standard library
+
+3. **Document all domain rules**
+   - Update this document with discovered rules
+   - Add examples for complex logic
+
+4. **Move to Application Layer**
+   - Define Use Cases
+   - Implement Use Cases using domain objects
+   - Add integration tests
+
+5. **Plan Infrastructure Layer**
+   - Design save file format
+   - Plan YAML schema
+   - Design repository implementations
+
+---
+
+## References
+
+### Related Documents
+- `01_game_mechanics.md` - Game design specification
+- `domain_objects.md` - Dart implementation details
+- `README.md` - Project overview
+
+### External Resources
+- [Domain-Driven Design by Eric Evans](https://www.domainlanguage.com/ddd/)
+- [Clean Architecture by Robert Martin](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
+- [Value Objects Explained](https://martinfowler.com/bliki/ValueObject.html)
+- [Aggregate Pattern](https://martinfowler.com/bliki/DDD_Aggregate.html)
+
+---
+
+**Last Updated**: 2025-10-23  
+**Version**: 1.1 (Phase 1 - Aligned with Implementation)  
+**Previous Version**: 1.0 (Phase 0 - Initial Design)
